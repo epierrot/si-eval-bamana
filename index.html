@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<title>SI Eval - Evaluateur mobile</title>
+<title>SI-NSI-SNT Eval - Evaluateur mobile</title>
 <style>
   :root {
     --bg: #101114; --surface: #191b20; --card: #23262d; --ink: #f4f1ea;
@@ -55,6 +55,8 @@
   .revoir { background: #3b2e0c; color: var(--warn); }
   .absent { background: #3b1212; color: var(--bad); }
 
+  
+
   .table-wrap { overflow: auto; max-height: 44vh; }
   table { width: 100%; border-collapse: collapse; font-size: 12px; min-width: 840px; }
   th { position: sticky; top: 0; background: var(--card); color: var(--muted); text-align: left; z-index: 1; }
@@ -87,10 +89,14 @@
       <h1>Evaluateur mobile SI</h1>
       <p>Scanner, verifier, annoter et exporter les copies eleves.</p>
     </div>
-    <div class="badge">LycÃ©e Younoussa Bamana</div>
+    <div class="badge">Mon Lycée</div>
+  </div>
+  <div style="display:flex; gap:10px; margin-bottom:12px; flex-wrap:wrap; width:100%;">
+    <button class="scan-btn" id="scanBtn" onclick="startScan()" style="flex:3; min-width:200px; margin-bottom:0;">Camera - scanner une copie eleve</button>
+    <button class="btn" onclick="document.getElementById('jsonImportInput').click()" style="flex:1; min-width:130px; min-height:58px; background:var(--card); border:1px solid var(--accent2); color:var(--accent2); font-weight:800; font-size:13px; cursor:pointer;">📂 Importer JSON</button>
+    <input type="file" id="jsonImportInput" accept=".json" style="display:none" onchange="importBackupJSON(event)">
   </div>
 
-  <button class="scan-btn" id="scanBtn" onclick="startScan()">Camera - scanner une copie eleve</button>
 
   <div class="stats">
     <div class="stat"><div class="val" id="count-scans">0</div><div class="lbl">Copies</div></div>
@@ -141,7 +147,6 @@
     </div>
     <div class="actions">
       <button class="btn ok" onclick="saveReview('verifiee')">Valider copie</button>
-      <button class="btn" onclick="downloadSelectedStudentCSV()">CSV de cet eleve</button>
       <button class="btn" onclick="saveReview()">Enregistrer</button>
     </div>
   </section>
@@ -166,10 +171,9 @@
     <button class="btn primary" onclick="downloadCSV()">Exporter CSV</button>
     <button class="btn blue" onclick="downloadExcel()">Exporter Excel</button>
     <button class="btn" onclick="downloadPDF()">Rapport PDF</button>
-    <button class="btn" onclick="exportToSheets()">Google Sheets</button>
   </div>
   <div class="actions">
-    <button class="btn bad" onclick="clearAll()">Effacer la collecte</button>
+    <button class="btn bad" onclick="clearAll()">Réinitialiser</button>
     <button class="btn" onclick="hideReview()">Masquer fiche</button>
     <button class="btn" onclick="quitApp()">Quitter</button>
   </div>
@@ -198,31 +202,119 @@ let isScanning = false;
 let selectedIndex = -1;
 
 function extractPayload(rawData) {
-  const raw = String(rawData || '').trim();
+  let raw = String(rawData || '').trim();
   if (!raw) return '';
-  const compactMatch = raw.match(/SI3\.[A-Za-z0-9_-]+/);
+  
+  // Si c'est une URL, on essaie d'extraire le paramètre data
+  if (raw.includes('?data=')) {
+    try {
+      const parts = raw.split('?data=');
+      if (parts.length > 1) {
+        return parts[1].split('&')[0];
+      }
+    } catch (_) {}
+  }
+  
+  // Si c'est une URL d'un autre type mais contenant une query string
+  if (raw.startsWith('http://') || raw.startsWith('https://')) {
+    try {
+      const url = new URL(raw);
+      const dataParam = url.searchParams.get('data');
+      if (dataParam) return dataParam;
+    } catch (_) {}
+  }
+  
+  // Format SI3. standalone (legacy)
+  const compactMatch = raw.match(/SI3\.[A-Za-z0-9_\-]+/);
   if (compactMatch) return compactMatch[0];
+  
+  // Si c'est une chaîne Base64 brute, on retourne la chaîne nettoyée des espaces
+  return raw.replace(/\s/g, '');
+}
+
+function decodePayloadToCsv(rawData) {
+  let payload = extractPayload(rawData);
+  if (payload.startsWith('SI3.')) {
+    payload = payload.slice(4);
+  }
+  // Remplacer les caractères de base64url par base64 standard
+  payload = payload.replace(/-/g, '+').replace(/_/g, '/');
+  // Ajuster le padding
+  while (payload.length % 4) payload += '=';
+  
+  // Décoder en gérant l'encodage UTF-8 correctement
   try {
-    const url = new URL(raw);
-    return url.searchParams.get('data') || raw;
-  } catch (_err) {
-    return raw;
+    return decodeURIComponent(escape(atob(payload)));
+  } catch (e) {
+    // Fallback si escape(atob()) échoue à cause de caractères mal formés
+    try {
+      return atob(payload);
+    } catch (err) {
+      console.error("Base64 decoding failed:", err);
+      return '';
+    }
   }
 }
 
+// ═══════════════════════════════════════════════════════
+// COLLAGE MANUEL DU CODE DE SECOURS
+// ═══════════════════════════════════════════════════════
 
-function decodePayloadToCsv(rawData) {
-  const clean = extractPayload(rawData).replace(/\s/g, '');
-  let payload = clean;
-  if (payload.startsWith('SI3.')) {
-    payload = payload.slice(4).replace(/-/g, '+').replace(/_/g, '/');
-  }
-  while (payload.length % 4) payload += '=';
-  return decodeURIComponent(escape(atob(payload)));
+function importBackupJSON(event) {
+  const file = event.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = function(e) {
+    try {
+      const bk = JSON.parse(e.target.result);
+      // Reconstruction du student depuis le JSON de secours
+      const s = bk.student || {};
+      const comments = bk.comments || {};
+      const score = bk.score || {};
+      const answers = (bk.answers || []).map(a => ({
+        qcm: !!a.qcm, appNum: a.appNum ?? '', points: a.points ?? 0
+      }));
+      const student = {
+        nom: s.nom || '', prenom: s.prenom || '', classe: s.classe || '',
+        date: s.date || new Date().toLocaleDateString('fr-FR'),
+        heure: s.heure || '',
+        answers: answers,
+        total: score.total ?? 0,
+        note: score.note ?? 0,
+        qcmCount: answers.filter(a => a.qcm).length,
+        calcCount: answers.filter(a => a.points >= 1).length,
+        commentaire: comments.commentaire || '',
+        difficulte: comments.difficulte || '',
+        temps: comments.temps || '',
+        teacherStatus: 'attente', teacherComment: '', teacherBonus: 0,
+        copyPhoto: '', scanTime: new Date().toISOString()
+      };
+      if (!student.nom && !student.prenom) { showToast('JSON invalide ou incompatible', true); return; }
+      const existingIndex = scannedData.findIndex(s => norm(s.nom) === norm(student.nom) && norm(s.prenom) === norm(student.prenom) && norm(s.classe) === norm(student.classe));
+      if (existingIndex >= 0) {
+        selectedIndex = existingIndex;
+        updateDisplay();
+        openReview(existingIndex);
+        showToast('Copie déjà présente : fiche ouverte', true);
+        return;
+      }
+      scannedData.push(student);
+      selectedIndex = scannedData.length - 1;
+      updateDisplay();
+      openReview(selectedIndex);
+      saveData();
+      showToast(student.prenom + ' ' + student.nom + ' importé(e) via JSON');
+    } catch (err) {
+      showToast('Erreur lecture JSON : ' + err.message, true);
+    }
+    event.target.value = '';
+  };
+  reader.readAsText(file);
 }
 function decodeQRData(rawData) {
   try {
     const csvRow = decodePayloadToCsv(rawData);
+    if (!csvRow) return null;
     const parts = csvRow.split(';');
     const student = {
       nom: parts[0] || '', prenom: parts[1] || '', classe: parts[2] || '',
@@ -266,7 +358,7 @@ async function startScan() {
     }, { highlightScanRegion: true, highlightCodeOutline: true, preferredCamera: 'environment' });
     await qrScanner.start();
   } catch (err) {
-    alert('Erreur camera : ' + err.message + '\nVerifiez les permissions camera puis reessayez.');
+    alert('Erreur camera : ' + err.message + '\nVeuillez réessayer ou agrandir le QR code sur l\'écran élève.');
     stopScan();
   }
 }
@@ -282,7 +374,7 @@ function stopScan() {
 
 function processQRData(qrData) {
   const student = decodeQRData(qrData);
-  if (!student) { showToast('QR code invalide', true); return; }
+  if (!student) { showToast('QR code ou code invalide', true); return; }
   const existingIndex = scannedData.findIndex(s => norm(s.nom) === norm(student.nom) && norm(s.prenom) === norm(student.prenom) && norm(s.classe) === norm(student.classe));
   if (existingIndex >= 0) {
     selectedIndex = existingIndex;
@@ -296,8 +388,7 @@ function processQRData(qrData) {
   updateDisplay();
   openReview(selectedIndex);
   saveData();
-  downloadStudentCSV(student);
-  showToast(student.prenom + ' ' + student.nom + ' ajoute(e) - CSV telecharge');
+  showToast(student.prenom + ' ' + student.nom + ' ajouté(e)');
 }
 
 function processUrlPayloadOnLoad() {
@@ -406,14 +497,6 @@ function updateComments() {
   });
 }
 
-function csvEscape(value) {
-  const s = String(value ?? '');
-  return /[;"\n\r]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
-}
-
-function safeFilePart(value) {
-  return String(value || 'NA').normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9_-]+/gi, '_').replace(/^_+|_+$/g, '') || 'NA';
-}
 
 function downloadBlob(content, filename, type='text/csv;charset=utf-8;') {
   const blob = new Blob([content], { type });
@@ -424,31 +507,6 @@ function downloadBlob(content, filename, type='text/csv;charset=utf-8;') {
   setTimeout(() => URL.revokeObjectURL(a.href), 1000);
 }
 
-function buildStudentCSV(st) {
-  const headers = ['Nom','Prenom','Classe','Date','Heure','QCM_OK','CALC_OK','Total','Note_auto','Statut','Bonus_Malus','Note_finale','Commentaire_eleve','Commentaire_enseignant','Difficulte','Temps_min'];
-  st.answers.forEach((_, i) => headers.push('Q' + (i + 1) + '_QCM', 'Q' + (i + 1) + '_AppNum', 'Q' + (i + 1) + '_Points'));
-  const final = finalNote(st);
-  const row = [st.nom, st.prenom, st.classe, st.date, st.heure, st.qcmCount, st.calcCount, st.total, st.note, st.teacherStatus || 'attente', st.teacherBonus || 0, final, st.commentaire || '', st.teacherComment || '', st.difficulte || '', st.temps || ''];
-  st.answers.forEach(a => row.push(a.qcm ? 'Correct' : 'Incorrect', a.appNum ?? '', a.points ?? 0));
-  return '\uFEFF' + headers.map(csvEscape).join(';') + '\n' + row.map(csvEscape).join(';') + '\n';
-}
-
-function studentCSVFilename(st) {
-  const stamp = new Date().toLocaleString('sv-SE').replace(/[ :]/g, '-');
-  return 'copie_SI_' + safeFilePart(st.classe) + '_' + safeFilePart(st.nom) + '_' + safeFilePart(st.prenom) + '_' + stamp + '.csv';
-}
-
-function downloadStudentCSV(student) {
-  if (!student) return;
-  downloadBlob(buildStudentCSV(student), studentCSVFilename(student));
-}
-
-function downloadSelectedStudentCSV() {
-  const st = scannedData[selectedIndex];
-  if (!st) { showToast('Aucune copie selectionnee', true); return; }
-  saveReview();
-  downloadStudentCSV(st);
-}
 
 function downloadCSV() {
   if (!scannedData.length) { showToast('Aucune donnee', true); return; }
@@ -485,14 +543,10 @@ function downloadPDF() {
   });
   html += '</tbody></table>';
   box.innerHTML = html;
-  html2pdf().set({ margin: 12, filename: 'SI_Eval_Copies_' + dateName() + '.pdf', image: { type: 'jpeg', quality: .98 }, html2canvas: { scale: 2 }, jsPDF: { unit: 'mm', format: 'a4', orientation: 'landscape' } }).from(box).save();
-}
-
-function exportToSheets() {
-  if (!scannedData.length) { showToast('Aucune donnee', true); return; }
-  let tsv = 'Nom\tPrenom\tClasse\tNote finale\tStatut\tCommentaire enseignant\n';
-  scannedData.forEach(st => { tsv += [st.nom, st.prenom, st.classe, finalNote(st), st.teacherStatus || 'attente', st.teacherComment || ''].join('\t') + '\n'; });
-  navigator.clipboard.writeText(tsv).then(() => { showToast('Donnees copiees pour Google Sheets'); window.open('https://sheets.new', '_blank'); }).catch(() => showToast('Copie impossible', true));
+  box.style.position = 'absolute';
+  box.style.left = '-9999px';
+  document.body.appendChild(box);
+  html2pdf().set({ margin: 12, filename: 'SI_Eval_Copies_' + dateName() + '.pdf', image: { type: 'jpeg', quality: .98 }, html2canvas: { scale: 2 }, jsPDF: { unit: 'mm', format: 'a4', orientation: 'landscape' } }).from(box).save().then(() => document.body.removeChild(box));
 }
 
 function quitApp() {
@@ -503,7 +557,7 @@ function quitApp() {
 }
 
 function clearAll() {
-  if (!confirm('Effacer toutes les copies collectees sur ce telephone ?')) return;
+  if (!confirm('Réinitialiser la collecte ?\n\nToutes les copies scannées (' + scannedData.length + ') seront supprimées de ce téléphone.\nCette action est irréversible.')) return;
   scannedData = [];
   selectedIndex = -1;
   hideReview();
@@ -521,12 +575,11 @@ function norm(s) { return String(s || '').trim().toLowerCase(); }
 function clamp(n, min, max) { return Math.max(min, Math.min(max, n)); }
 function csvCell(v) { const s = String(v ?? '').replace(/"/g, '""'); return /[;"\n\r]/.test(s) ? '"' + s + '"' : s; }
 function dateName() { return new Date().toLocaleDateString('fr-FR').replace(/\//g, '-'); }
-function downloadBlob(content, filename, type) { const blob = new Blob([content], { type }); const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = filename; a.click(); URL.revokeObjectURL(a.href); }
 
 loadData();
+processUrlPayloadOnLoad();
 
 setInterval(saveData, 10000);
 </script>
 </body>
 </html>
-
